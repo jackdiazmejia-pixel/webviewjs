@@ -1,0 +1,837 @@
+name: Build APK
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+      - name: Aceptar licencias Android
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+      - name: Generar proyecto
+        run: |
+          cat > settings.gradle.kts <<'EOF_0'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "WebViewJS"
+          include(":app")
+          EOF_0
+          cat > build.gradle.kts <<'EOF_1'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF_1
+          cat > gradle.properties <<'EOF_2'
+          android.useAndroidX=true
+          org.gradle.jvmargs=-Xmx3g
+          EOF_2
+          mkdir -p app
+          cat > app/build.gradle.kts <<'EOF_3'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "com.example.webviewjs"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.example.webviewjs"
+                  minSdk = 24
+                  targetSdk = 34
+                  versionCode = 2
+                  versionName = "2.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          dependencies {
+              implementation("androidx.appcompat:appcompat:1.6.1")
+              implementation("androidx.webkit:webkit:1.11.0")
+          }
+          EOF_3
+          mkdir -p app/src/main
+          cat > app/src/main/AndroidManifest.xml <<'EOF_4'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+              <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+              <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <application
+                  android:label="WebView JS"
+                  android:theme="@style/Theme.App"
+                  android:usesCleartextTraffic="true">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF_4
+          mkdir -p app/src/main/res/values
+          cat > app/src/main/res/values/themes.xml <<'EOF_5'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="Theme.App" parent="Theme.AppCompat.NoActionBar">
+                  <item name="android:windowBackground">@android:color/black</item>
+                  <item name="android:colorBackground">@android:color/black</item>
+                  <item name="android:statusBarColor">@android:color/black</item>
+                  <item name="android:navigationBarColor">@android:color/black</item>
+                  <item name="colorAccent">#FF4DA3FF</item>
+                  <item name="alertDialogTheme">@style/Theme.App.Dialog</item>
+              </style>
+              <style name="Theme.App.Dialog" parent="Theme.AppCompat.Dialog.Alert">
+                  <item name="android:windowBackground">@drawable/dialog_bg</item>
+                  <item name="colorAccent">#FF4DA3FF</item>
+              </style>
+          </resources>
+          EOF_5
+          mkdir -p app/src/main/res/drawable
+          cat > app/src/main/res/drawable/dialog_bg.xml <<'EOF_6'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <solid android:color="#FF000000" />
+              <stroke android:width="1dp" android:color="#FF333333" />
+              <corners android:radius="12dp" />
+          </shape>
+          EOF_6
+          mkdir -p app/src/main/java/com/example/webviewjs
+          cat > app/src/main/java/com/example/webviewjs/MainActivity.kt <<'EOF_7'
+          package com.example.webviewjs
+
+          import android.Manifest
+          import android.annotation.SuppressLint
+          import android.app.DownloadManager
+          import android.content.ActivityNotFoundException
+          import android.content.ClipData
+          import android.content.ClipboardManager
+          import android.content.ContentValues
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.graphics.Bitmap
+          import android.graphics.Color
+          import android.graphics.Typeface
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.Environment
+          import android.os.Message
+          import android.provider.MediaStore
+          import android.text.InputType
+          import android.util.Base64
+          import android.view.Gravity
+          import android.view.View
+          import android.view.ViewGroup
+          import android.view.inputmethod.EditorInfo
+          import android.webkit.CookieManager
+          import android.webkit.JavascriptInterface
+          import android.webkit.MimeTypeMap
+          import android.webkit.URLUtil
+          import android.webkit.ValueCallback
+          import android.webkit.WebChromeClient
+          import android.webkit.WebResourceError
+          import android.webkit.WebResourceRequest
+          import android.webkit.WebView
+          import android.webkit.WebViewClient
+          import android.widget.Button
+          import android.widget.EditText
+          import android.widget.FrameLayout
+          import android.widget.LinearLayout
+          import android.widget.ProgressBar
+          import android.widget.ScrollView
+          import android.widget.TextView
+          import android.widget.Toast
+          import androidx.activity.OnBackPressedCallback
+          import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.appcompat.app.AlertDialog
+          import androidx.appcompat.app.AppCompatActivity
+          import androidx.webkit.ScriptHandler
+          import androidx.webkit.WebViewCompat
+          import androidx.webkit.WebViewFeature
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import org.json.JSONTokener
+          import java.io.File
+          import java.net.URLDecoder
+
+          class MainActivity : AppCompatActivity() {
+
+              private lateinit var container: FrameLayout
+              private lateinit var urlBar: EditText
+              private lateinit var progress: ProgressBar
+              private val stack = mutableListOf<WebView>() // [0] = principal, el resto = popups
+              private val current get() = stack.last()
+              private val prefs by lazy { getSharedPreferences("scripts", MODE_PRIVATE) }
+              private val gm by lazy { getSharedPreferences("gm", MODE_PRIVATE) }
+              private val startHandles = mutableMapOf<WebView, MutableList<ScriptHandler>>()
+              private val startSupported by lazy {
+                  WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
+              }
+              private var amoled: Boolean
+                  get() = prefs.getBoolean("amoled", true)
+                  set(v) { prefs.edit().putBoolean("amoled", v).apply() }
+
+              private var fileCb: ValueCallback<Array<Uri>>? = null
+              private val chooser = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+                  fileCb?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(r.resultCode, r.data))
+                  fileCb = null
+              }
+              private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
+
+              private fun dp(n: Int) = (n * resources.displayMetrics.density).toInt()
+              private fun toast(s: String) = runOnUiThread { Toast.makeText(this, s, Toast.LENGTH_SHORT).show() }
+
+              private fun btn(t: String, onClick: () -> Unit) = Button(this).apply {
+                  text = t
+                  isAllCaps = false
+                  setTextColor(Color.WHITE)
+                  setBackgroundColor(0xFF1A1A1A.toInt())
+                  minWidth = 0
+                  minimumWidth = 0
+                  setPadding(dp(14), 0, dp(14), 0)
+                  layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(44)).apply {
+                      leftMargin = dp(4)
+                  }
+                  setOnClickListener { onClick() }
+              }
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  window.statusBarColor = Color.BLACK
+                  window.navigationBarColor = Color.BLACK
+
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      fitsSystemWindows = true
+                      setBackgroundColor(Color.BLACK)
+                  }
+                  val bar = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      setBackgroundColor(Color.BLACK)
+                      setPadding(dp(4), dp(4), dp(4), dp(4))
+                  }
+                  urlBar = EditText(this).apply {
+                      setSingleLine()
+                      hint = "URL o búsqueda"
+                      textSize = 14f
+                      setTextColor(Color.WHITE)
+                      setHintTextColor(0xFF777777.toInt())
+                      setBackgroundColor(0xFF111111.toInt())
+                      setPadding(dp(12), dp(10), dp(12), dp(10))
+                      inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+                      imeOptions = EditorInfo.IME_ACTION_GO
+                      layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f)
+                      setOnEditorActionListener { _, id, _ ->
+                          if (id == EditorInfo.IME_ACTION_GO) { go(text.toString()); true } else false
+                      }
+                  }
+                  bar.addView(urlBar)
+                  bar.addView(btn("Ir") { go(urlBar.text.toString()) })
+                  bar.addView(btn("⟳") { current.reload() })
+                  bar.addView(btn("⋮") { showMenu() })
+
+                  progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+                      max = 100
+                      visibility = View.GONE
+                      layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3))
+                  }
+                  container = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
+
+                  root.addView(bar)
+                  root.addView(progress)
+                  root.addView(container, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+                  setContentView(root)
+
+                  askPermissions()
+
+                  val main = newWebView()
+                  container.addView(main)
+                  stack.add(main)
+                  main.loadUrl("https://mail.google.com")
+
+                  onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+                      override fun handleOnBackPressed() {
+                          when {
+                              current.canGoBack() -> current.goBack()
+                              stack.size > 1 -> closeWindow(current)
+                              else -> { isEnabled = false; onBackPressedDispatcher.onBackPressed() }
+                          }
+                      }
+                  })
+              }
+
+              override fun onPause() {
+                  super.onPause()
+                  CookieManager.getInstance().flush()
+              }
+
+              private fun askPermissions() {
+                  val p = mutableListOf<String>()
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      p += Manifest.permission.READ_MEDIA_IMAGES
+                      p += Manifest.permission.READ_MEDIA_VIDEO
+                      p += Manifest.permission.READ_MEDIA_AUDIO
+                      p += Manifest.permission.POST_NOTIFICATIONS
+                  } else {
+                      p += Manifest.permission.READ_EXTERNAL_STORAGE
+                      if (Build.VERSION.SDK_INT <= 28) p += Manifest.permission.WRITE_EXTERNAL_STORAGE
+                  }
+                  val need = p.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+                  if (need.isNotEmpty()) permLauncher.launch(need.toTypedArray())
+              }
+
+              // ---------------- WebView ----------------
+
+              @SuppressLint("SetJavaScriptEnabled")
+              private fun newWebView(): WebView {
+                  val w = WebView(this)
+                  w.setBackgroundColor(Color.BLACK)
+                  w.settings.apply {
+                      javaScriptEnabled = true
+                      domStorageEnabled = true
+                      javaScriptCanOpenWindowsAutomatically = true
+                      setSupportMultipleWindows(true)
+                      mediaPlaybackRequiresUserGesture = false
+                      allowContentAccess = true
+                      useWideViewPort = true
+                      loadWithOverviewMode = true
+                      setSupportZoom(true)
+                      builtInZoomControls = true
+                      displayZoomControls = false
+                      userAgentString = userAgentString
+                          .replace("; wv", "")
+                          .replace(Regex("Version/\\d+\\.\\d+ "), "")
+                  }
+                  CookieManager.getInstance().setAcceptCookie(true)
+                  CookieManager.getInstance().setAcceptThirdPartyCookies(w, true)
+                  w.addJavascriptInterface(Bridge(), "AndroidBridge")
+
+                  // Descarga directa, sin preguntar
+                  w.setDownloadListener { url, ua, cd, mime, _ -> startDownload(url, ua, cd, mime, w, null) }
+
+                  w.webViewClient = object : WebViewClient() {
+                      override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                          val scheme = request.url.scheme ?: return false
+                          if (scheme in listOf("http", "https", "about", "file", "data", "blob", "javascript")) return false
+                          openExternal(view, request.url.toString())
+                          return true
+                      }
+
+                      override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+                          if (request.isForMainFrame && error.errorCode == WebViewClient.ERROR_UNSUPPORTED_SCHEME) {
+                              openExternal(view, request.url.toString())
+                          }
+                      }
+
+                      override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+                          if (!startSupported) {
+                              if (amoled) view.evaluateJavascript(AMOLED_JS, null)
+                              runScripts(view, true)
+                          }
+                      }
+
+                      override fun onPageFinished(view: WebView, url: String?) {
+                          if (view === current) urlBar.setText(url ?: "")
+                          if (!startSupported && amoled) view.evaluateJavascript(AMOLED_JS, null)
+                          runScripts(view, false)
+                      }
+                  }
+                  w.webChromeClient = object : WebChromeClient() {
+                      override fun onProgressChanged(view: WebView, p: Int) {
+                          progress.progress = p
+                          progress.visibility = if (p < 100) View.VISIBLE else View.GONE
+                      }
+
+                      override fun onCreateWindow(
+                          view: WebView, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message
+                      ): Boolean {
+                          val popup = newWebView()
+                          container.addView(popup)
+                          stack.add(popup)
+                          (resultMsg.obj as WebView.WebViewTransport).webView = popup
+                          resultMsg.sendToTarget()
+                          return true
+                      }
+
+                      override fun onCloseWindow(window: WebView) = closeWindow(window)
+
+                      override fun onShowFileChooser(
+                          view: WebView, cb: ValueCallback<Array<Uri>>, params: FileChooserParams
+                      ): Boolean {
+                          fileCb?.onReceiveValue(null)
+                          fileCb = cb
+                          return try {
+                              chooser.launch(params.createIntent())
+                              true
+                          } catch (e: Exception) {
+                              fileCb = null
+                              false
+                          }
+                      }
+                  }
+                  registerStart(w)
+                  return w
+              }
+
+              private fun closeWindow(w: WebView) {
+                  if (w === stack[0]) return
+                  startHandles.remove(w)
+                  container.removeView(w)
+                  stack.remove(w)
+                  w.destroy()
+                  urlBar.setText(current.url ?: "")
+              }
+
+              private fun go(input: String) {
+                  val t = input.trim()
+                  if (t.isEmpty()) return
+                  val url = when {
+                      t.contains("://") -> t
+                      t.contains(".") && !t.contains(" ") -> "https://$t"
+                      else -> "https://www.google.com/search?q=" + Uri.encode(t)
+                  }
+                  current.loadUrl(url)
+              }
+
+              // Enlaces intent://, mailto:, tel:, etc. -> se entregan al sistema (arregla la verificación de Google)
+              private fun openExternal(view: WebView, url: String) {
+                  try {
+                      val i = if (url.startsWith("intent:")) Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
+                      else Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                      i.addCategory(Intent.CATEGORY_BROWSABLE)
+                      i.component = null
+                      i.selector = null
+                      startActivity(i)
+                  } catch (e: ActivityNotFoundException) {
+                      var fb: String? = null
+                      if (url.startsWith("intent:")) {
+                          try {
+                              fb = Intent.parseUri(url, Intent.URI_INTENT_SCHEME).getStringExtra("browser_fallback_url")
+                          } catch (e2: Exception) { }
+                      }
+                      if (fb != null) view.loadUrl(fb) else toast("No hay una app para abrir este enlace")
+                  } catch (e: Exception) {
+                      toast("No se pudo abrir el enlace")
+                  }
+              }
+
+              // ---------------- Descargas ----------------
+
+              private fun startDownload(
+                  url: String, ua: String?, cd: String?, mime: String?, w: WebView, forcedName: String?
+              ) {
+                  val name = forcedName ?: URLUtil.guessFileName(url, cd, mime)
+                  when {
+                      url.startsWith("blob:") -> w.evaluateJavascript(blobJs(url, name), null)
+                      url.startsWith("data:") -> saveDataUrl(url, name)
+                      else -> try {
+                          val r = DownloadManager.Request(Uri.parse(url))
+                          if (!mime.isNullOrBlank()) r.setMimeType(mime)
+                          CookieManager.getInstance().getCookie(url)?.let { r.addRequestHeader("Cookie", it) }
+                          if (!ua.isNullOrBlank()) r.addRequestHeader("User-Agent", ua)
+                          w.url?.let { r.addRequestHeader("Referer", it) }
+                          r.setTitle(name)
+                          r.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                          r.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name)
+                          (getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(r)
+                          toast("Descargando: $name")
+                      } catch (e: Exception) {
+                          toast("No se pudo descargar: ${e.message}")
+                      }
+                  }
+              }
+
+              private fun blobJs(url: String, name: String) =
+                  "(function(){var x=new XMLHttpRequest();x.open('GET'," + JSONObject.quote(url) +
+                      ",true);x.responseType='blob';x.onload=function(){var r=new FileReader();" +
+                      "r.onloadend=function(){AndroidBridge.saveDataUrl(r.result," + JSONObject.quote(name) +
+                      ")};r.readAsDataURL(x.response)};x.send()})();"
+
+              private fun saveDataUrl(d: String, name: String) {
+                  val comma = d.indexOf(',')
+                  if (!d.startsWith("data:") || comma < 0) return
+                  val head = d.substring(5, comma)
+                  val body = d.substring(comma + 1)
+                  val mime = head.substringBefore(';').ifBlank { "application/octet-stream" }
+                  val bytes = if (head.contains(";base64")) Base64.decode(body, Base64.DEFAULT)
+                  else URLDecoder.decode(body, "UTF-8").toByteArray()
+                  var n = name
+                  val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime)
+                  if (ext != null && (n.endsWith(".bin") || !n.contains('.'))) n = n.substringBeforeLast('.', n) + "." + ext
+                  saveBytes(bytes, n, mime)
+              }
+
+              private fun saveBytes(bytes: ByteArray, name: String, mime: String) {
+                  val clean = name.replace(Regex("[\\\\/:*?\"<>|]"), "_").ifBlank { "archivo" }
+                  try {
+                      if (Build.VERSION.SDK_INT >= 29) {
+                          val v = ContentValues().apply {
+                              put(MediaStore.Downloads.DISPLAY_NAME, clean)
+                              put(MediaStore.Downloads.MIME_TYPE, mime)
+                              put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                          }
+                          val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v) ?: return
+                          contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+                      } else {
+                          val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                          dir.mkdirs()
+                          File(dir, clean).writeBytes(bytes)
+                      }
+                      toast("Guardado en Descargas: $clean")
+                  } catch (e: Exception) {
+                      toast("No se pudo guardar: ${e.message}")
+                  }
+              }
+
+              inner class Bridge {
+                  @JavascriptInterface
+                  fun saveDataUrl(d: String, name: String) { this@MainActivity.saveDataUrl(d, name) }
+
+                  @JavascriptInterface
+                  fun download(url: String, name: String) {
+                      runOnUiThread {
+                          startDownload(url, current.settings.userAgentString, null, null, current, name.ifBlank { null })
+                      }
+                  }
+
+                  @JavascriptInterface
+                  fun gmGet(id: String, key: String): String? = gm.getString("$id:$key", null)
+
+                  @JavascriptInterface
+                  fun gmSet(id: String, key: String, value: String) { gm.edit().putString("$id:$key", value).apply() }
+
+                  @JavascriptInterface
+                  fun gmDel(id: String, key: String) { gm.edit().remove("$id:$key").apply() }
+
+                  @JavascriptInterface
+                  fun gmList(id: String): String {
+                      val p = "$id:"
+                      return JSONArray(gm.all.keys.filter { it.startsWith(p) }.map { it.removePrefix(p) }).toString()
+                  }
+
+                  @JavascriptInterface
+                  fun copy(text: String) {
+                      runOnUiThread {
+                          (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+                              .setPrimaryClip(ClipData.newPlainText("texto", text))
+                          Toast.makeText(this@MainActivity, "Copiado", Toast.LENGTH_SHORT).show()
+                      }
+                  }
+
+                  @JavascriptInterface
+                  fun toast(msg: String) { this@MainActivity.toast(msg) }
+              }
+
+              // ---------------- Modo AMOLED en páginas ----------------
+
+              private val AMOLED_JS = """
+                  (function(){
+                  if(window.__amo)return;window.__amo=1;
+                  var s=document.createElement('style');s.id='__amoled';
+                  s.textContent='html{background:#fff!important;filter:invert(1) hue-rotate(180deg)!important}img,picture,video,canvas,svg image,[style*="background-image"]{filter:invert(1) hue-rotate(180deg)!important}';
+                  function add(){var p=document.head||document.documentElement;if(p){p.appendChild(s);return true}return false}
+                  if(!add()){new MutationObserver(function(m,o){if(add())o.disconnect()}).observe(document,{childList:true})}
+                  function lum(c){var m=c.match(/[\d.]+/g);if(!m||m.length<3)return null;var a=m.length>3?parseFloat(m[3]):1;if(a<0.1)return null;return 0.299*m[0]+0.587*m[1]+0.114*m[2]}
+                  function check(){try{var l=lum(getComputedStyle(document.body||document.documentElement).backgroundColor);if(l===null)l=lum(getComputedStyle(document.documentElement).backgroundColor);if(l!==null&&l<110){var e=document.getElementById('__amoled');if(e)e.remove()}}catch(x){}}
+                  document.addEventListener('DOMContentLoaded',check);window.addEventListener('load',check);
+                  })();
+              """.trimIndent()
+
+              // ---------------- Scripts estilo Tampermonkey ----------------
+
+              private class Meta(
+                  val name: String?, val version: String,
+                  val matches: List<String>, val includes: List<String>, val excludes: List<String>,
+                  val runAt: String, val noframes: Boolean
+              )
+
+              private fun parseMeta(code: String): Meta {
+                  val block = Regex("//\\s*==UserScript==([\\s\\S]*?)//\\s*==/UserScript==")
+                      .find(code)?.groupValues?.get(1) ?: ""
+                  val m = mutableMapOf<String, MutableList<String>>()
+                  val re = Regex("^\\s*//\\s*@([\\w:.-]+)[ \\t]*(.*)\$", RegexOption.MULTILINE)
+                  for (r in re.findAll(block)) {
+                      m.getOrPut(r.groupValues[1]) { mutableListOf() }.add(r.groupValues[2].trim())
+                  }
+                  return Meta(
+                      name = m["name"]?.firstOrNull(),
+                      version = m["version"]?.firstOrNull() ?: "",
+                      matches = m["match"].orEmpty(),
+                      includes = m["include"].orEmpty(),
+                      excludes = m["exclude"].orEmpty() + m["exclude-match"].orEmpty(),
+                      runAt = m["run-at"]?.firstOrNull() ?: "document-idle",
+                      noframes = m.containsKey("noframes")
+                  )
+              }
+
+              // Convierte un patrón @match/@include/@exclude en una expresión regular compatible con Kotlin y JS
+              private fun globToRegex(g: String, isMatch: Boolean): String {
+                  if (g.length > 2 && g.startsWith("/") && g.endsWith("/")) return g.substring(1, g.length - 1)
+                  if (g == "<all_urls>") return ".*"
+                  var s = g
+                  val sb = StringBuilder()
+                  if (isMatch && s.startsWith("*://")) { sb.append("https?://"); s = s.substring(4) }
+                  for (c in s) {
+                      when {
+                          c == '*' -> sb.append(".*")
+                          "\\^\$.|?+()[]{}".indexOf(c) >= 0 -> sb.append('\\').append(c)
+                          else -> sb.append(c)
+                      }
+                  }
+                  var r = sb.toString()
+                  if (isMatch) r = r.replace("://.*\\.", "://([^/]*\\.)?")
+                  return r
+              }
+
+              private val GM_SHIM = """
+                  var __id=__ID__,B=window.AndroidBridge,unsafeWindow=window;
+                  var GM_info={script:{name:__NAME__,version:__VER__},scriptHandler:'WebViewJS',version:'1'};
+                  function GM_getValue(k,d){var v=B.gmGet(__id,k);if(v===null||v===undefined)return d;try{return JSON.parse(v)}catch(e){return d}}
+                  function GM_setValue(k,v){B.gmSet(__id,k,JSON.stringify(v))}
+                  function GM_deleteValue(k){B.gmDel(__id,k)}
+                  function GM_listValues(){return JSON.parse(B.gmList(__id))}
+                  function GM_addStyle(c){var s=document.createElement('style');s.textContent=c;(document.head||document.documentElement).appendChild(s);return s}
+                  function GM_log(){console.log.apply(console,arguments)}
+                  function GM_openInTab(u){window.open(u,'_blank')}
+                  function GM_setClipboard(t){B.copy(String(t))}
+                  function GM_download(a,n){var u=typeof a==='string'?a:a.url,m=typeof a==='string'?n:a.name;
+                  if(u.indexOf('blob:')===0){var x=new XMLHttpRequest();x.open('GET',u,true);x.responseType='blob';x.onload=function(){var r=new FileReader();r.onloadend=function(){B.saveDataUrl(r.result,m||'')};r.readAsDataURL(x.response)};x.send()}
+                  else{B.download(new URL(u,location.href).href,m||'')}}
+                  function GM_xmlhttpRequest(d){fetch(d.url,{method:d.method||'GET',headers:d.headers,body:d.data}).then(function(r){return r.text().then(function(t){var o={status:r.status,statusText:r.statusText,responseText:t,response:d.responseType==='json'?JSON.parse(t):t,finalUrl:r.url};if(d.onload)d.onload(o)})}).catch(function(e){if(d.onerror)d.onerror(e)})}
+                  var GM={info:GM_info,getValue:function(k,d){return Promise.resolve(GM_getValue(k,d))},setValue:function(k,v){GM_setValue(k,v);return Promise.resolve()},deleteValue:function(k){GM_deleteValue(k);return Promise.resolve()},listValues:function(){return Promise.resolve(GM_listValues())},addStyle:GM_addStyle,openInTab:GM_openInTab,setClipboard:GM_setClipboard,download:GM_download,xmlHttpRequest:GM_xmlhttpRequest,log:GM_log};
+              """.trimIndent()
+
+              private fun wrap(s: JSONObject, meta: Meta, force: Boolean = false): String {
+                  val id = s.optString("id").ifEmpty { s.optString("name") }
+                  val name = meta.name ?: s.optString("name")
+                  val inc = JSONArray()
+                  val exc = JSONArray()
+                  meta.matches.forEach { inc.put(globToRegex(it, true)) }
+                  meta.includes.forEach { inc.put(globToRegex(it, false)) }
+                  if (inc.length() == 0) inc.put(globToRegex(s.optString("match", "*").ifBlank { "*" }, false))
+                  meta.excludes.forEach { exc.put(globToRegex(it, false)) }
+                  val shim = GM_SHIM
+                      .replace("__ID__", JSONObject.quote(id))
+                      .replace("__NAME__", JSONObject.quote(name))
+                      .replace("__VER__", JSONObject.quote(meta.version))
+                  val check = if (force) "" else
+                      "function t(a){for(var i=0;i<a.length;i++){try{if(new RegExp('^(?:'+a[i]+')\\x24').test(u))return true}catch(e){}}return false}" +
+                          "if(!t(inc)||t(exc))return;"
+                  val frames = if (meta.noframes) "if(window.top!==window.self)return;" else ""
+                  return "(function(){var inc=" + inc + ",exc=" + exc + ",u=location.href;" + check + frames +
+                      shim + "\ntry{\n" + s.getString("code") +
+                      "\n}catch(e){console.error(e);try{AndroidBridge.toast('Error en script: '+e)}catch(x){}}\n})();"
+              }
+
+              private fun loadScripts() = JSONArray(prefs.getString("list", "[]"))
+              private fun saveScripts(a: JSONArray) {
+                  prefs.edit().putString("list", a.toString()).apply()
+                  registerAll()
+              }
+
+              private fun enabledScripts(): List<Pair<JSONObject, Meta>> {
+                  val list = loadScripts()
+                  val out = mutableListOf<Pair<JSONObject, Meta>>()
+                  for (i in 0 until list.length()) {
+                      val s = list.getJSONObject(i)
+                      if (s.optBoolean("enabled", true)) out.add(s to parseMeta(s.getString("code")))
+                  }
+                  return out
+              }
+
+              // Ejecuta scripts: start=true -> document-start (solo si no hay soporte nativo); start=false -> el resto
+              private fun runScripts(view: WebView, start: Boolean) {
+                  for ((s, meta) in enabledScripts()) {
+                      val isStart = meta.runAt == "document-start"
+                      if (isStart == start) view.evaluateJavascript(wrap(s, meta), null)
+                  }
+              }
+
+              // Registra los scripts document-start y el modo AMOLED para que corran antes de que cargue la página
+              private fun registerStart(w: WebView) {
+                  startHandles.remove(w)?.forEach { try { it.remove() } catch (e: Exception) { } }
+                  if (!startSupported) return
+                  val hs = mutableListOf<ScriptHandler>()
+                  try {
+                      if (amoled) hs += WebViewCompat.addDocumentStartJavaScript(w, AMOLED_JS, setOf("*"))
+                      for ((s, meta) in enabledScripts()) {
+                          if (meta.runAt == "document-start") {
+                              hs += WebViewCompat.addDocumentStartJavaScript(w, wrap(s, meta), setOf("*"))
+                          }
+                      }
+                  } catch (e: Exception) {
+                      toast("No se pudieron registrar los scripts: ${e.message}")
+                  }
+                  startHandles[w] = hs
+              }
+
+              private fun registerAll() { stack.forEach { registerStart(it) } }
+
+              private fun scriptDialog(index: Int) {
+                  val list = loadScripts()
+                  val s = if (index >= 0) list.getJSONObject(index)
+                  else JSONObject().put("name", "").put("match", "*").put("code", "").put("enabled", true)
+
+                  val lay = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(20), dp(10), dp(20), 0)
+                  }
+                  val name = EditText(this).apply { hint = "Nombre (opcional si el código trae @name)"; setText(s.optString("name")) }
+                  val match = EditText(this).apply {
+                      hint = "Páginas si el código no trae @match (ej: *://*.google.com/*)"
+                      setText(s.optString("match", "*"))
+                  }
+                  val code = EditText(this).apply {
+                      hint = "Código JavaScript (acepta cabeceras // ==UserScript==)"
+                      setText(s.optString("code"))
+                      inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                          InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+                      minLines = 10
+                      gravity = Gravity.TOP
+                      typeface = Typeface.MONOSPACE
+                  }
+                  lay.addView(name); lay.addView(match); lay.addView(code)
+
+                  AlertDialog.Builder(this)
+                      .setTitle(if (index >= 0) "Editar script" else "Nuevo script")
+                      .setView(ScrollView(this).apply { addView(lay) })
+                      .setPositiveButton("Guardar") { _, _ ->
+                          val c = code.text.toString()
+                          s.put("name", name.text.toString().ifBlank { parseMeta(c).name ?: "Sin nombre" })
+                          s.put("match", match.text.toString().ifBlank { "*" })
+                          s.put("code", c)
+                          if (s.optString("id").isEmpty()) s.put("id", System.currentTimeMillis().toString())
+                          if (index >= 0) list.put(index, s) else list.put(s)
+                          saveScripts(list)
+                      }
+                      .setNeutralButton("Ejecutar") { _, _ ->
+                          val tmp = JSONObject().put("name", name.text.toString().ifBlank { "prueba" })
+                              .put("id", s.optString("id").ifEmpty { "prueba" })
+                              .put("match", "*").put("code", code.text.toString())
+                          current.evaluateJavascript(wrap(tmp, parseMeta(code.text.toString()), true), null)
+                      }
+                      .setNegativeButton("Cerrar", null)
+                      .show()
+              }
+
+              private fun scriptsList() {
+                  val list = loadScripts()
+                  val names = Array(list.length()) { i ->
+                      val s = list.getJSONObject(i)
+                      (if (s.optBoolean("enabled", true)) "✅ " else "⬜ ") + s.optString("name")
+                  }
+                  AlertDialog.Builder(this)
+                      .setTitle("Mis scripts")
+                      .setItems(names) { _, i -> scriptActions(i) }
+                      .setPositiveButton("Nuevo") { _, _ -> scriptDialog(-1) }
+                      .setNegativeButton("Cerrar", null)
+                      .show()
+              }
+
+              private fun scriptActions(i: Int) {
+                  val list = loadScripts()
+                  val s = list.getJSONObject(i)
+                  AlertDialog.Builder(this)
+                      .setTitle(s.optString("name"))
+                      .setItems(arrayOf("Editar", "Activar / Desactivar", "Ejecutar ahora", "Borrar")) { _, which ->
+                          when (which) {
+                              0 -> scriptDialog(i)
+                              1 -> {
+                                  s.put("enabled", !s.optBoolean("enabled", true))
+                                  list.put(i, s); saveScripts(list); scriptsList()
+                              }
+                              2 -> current.evaluateJavascript(
+                                  wrap(s, parseMeta(s.getString("code")), true), null
+                              )
+                              3 -> { list.remove(i); saveScripts(list); scriptsList() }
+                          }
+                      }
+                      .show()
+              }
+
+              // ---------------- Inspector DOM ----------------
+
+              private val treeJs = """
+                  (function(){var out=[];function w(e,d){if(d>8||out.length>600)return;
+                  var c=(typeof e.className==='string'&&e.className.trim())?'.'+e.className.trim().split(/\s+/).join('.'):'';
+                  out.push('  '.repeat(d)+e.tagName.toLowerCase()+(e.id?'#'+e.id:'')+c);
+                  for(var i=0;i<e.children.length;i++)w(e.children[i],d+1)}
+                  w(document.documentElement,0);return out.join('\n')})()
+              """.trimIndent()
+
+              private fun showJsText(title: String, js: String) {
+                  current.evaluateJavascript(js) { r ->
+                      val content = (JSONTokener(r ?: "null").nextValue() as? String) ?: "(sin resultado)"
+                      val tv = TextView(this).apply {
+                          text = content
+                          setTextColor(Color.WHITE)
+                          setTextIsSelectable(true)
+                          typeface = Typeface.MONOSPACE
+                          textSize = 11f
+                          setPadding(dp(16), dp(8), dp(16), dp(8))
+                      }
+                      AlertDialog.Builder(this)
+                          .setTitle(title)
+                          .setView(ScrollView(this).apply { addView(tv) })
+                          .setPositiveButton("Cerrar", null)
+                          .show()
+                  }
+              }
+
+              // ---------------- Menú ----------------
+
+              private fun showMenu() {
+                  val acts = listOf<Pair<String, () -> Unit>>(
+                      "Ejecutar JavaScript" to { scriptDialog(-1) },
+                      "Mis scripts" to { scriptsList() },
+                      "Modo AMOLED en páginas: " + (if (amoled) "SÍ" else "NO") to {
+                          amoled = !amoled
+                          registerAll()
+                          current.reload()
+                      },
+                      "Árbol DOM" to { showJsText("Árbol DOM", treeJs) },
+                      "Ver HTML" to { showJsText("HTML", "document.documentElement.outerHTML.slice(0,60000)") },
+                      "Recargar" to { current.reload() },
+                      "Borrar cookies" to {
+                          CookieManager.getInstance().removeAllCookies { toast("Cookies borradas") }
+                      }
+                  )
+                  AlertDialog.Builder(this)
+                      .setItems(acts.map { it.first }.toTypedArray()) { _, i -> acts[i].second() }
+                      .show()
+              }
+          }
+          EOF_7
+
+      - name: Compilar
+        run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
