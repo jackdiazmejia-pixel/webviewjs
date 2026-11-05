@@ -1,0 +1,767 @@
+name: Build APK
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+      - name: Crear archivos del proyecto
+        run: |
+          mkdir -p "$(dirname 'app/build.gradle.kts')"
+          cat > 'app/build.gradle.kts' <<'FIN_ARCHIVO_0'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.autoprompter"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.autoprompter"
+                  minSdk = 24
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+
+              buildTypes {
+                  release { isMinifyEnabled = false }
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          FIN_ARCHIVO_0
+          mkdir -p "$(dirname 'app/src/main/AndroidManifest.xml')"
+          cat > 'app/src/main/AndroidManifest.xml' <<'FIN_ARCHIVO_1'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+
+              <application
+                  android:allowBackup="false"
+                  android:label="@string/app_name"
+                  android:requestLegacyExternalStorage="true"
+                  android:theme="@style/AppTheme">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".ClickService"
+                      android:exported="true"
+                      android:label="@string/app_name"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_config" />
+                  </service>
+              </application>
+          </manifest>
+          FIN_ARCHIVO_1
+          mkdir -p "$(dirname 'app/src/main/java/com/autoprompter/ClickService.kt')"
+          cat > 'app/src/main/java/com/autoprompter/ClickService.kt' <<'FIN_ARCHIVO_2'
+          package com.autoprompter
+
+          import android.accessibilityservice.AccessibilityService
+          import android.accessibilityservice.GestureDescription
+          import android.content.ClipData
+          import android.content.ClipboardManager
+          import android.content.Intent
+          import android.graphics.Color
+          import android.graphics.Path
+          import android.graphics.PixelFormat
+          import android.os.Bundle
+          import android.os.Handler
+          import android.os.Looper
+          import android.util.Log
+          import android.view.Gravity
+          import android.view.View
+          import android.view.WindowManager
+          import android.view.accessibility.AccessibilityEvent
+          import android.view.accessibility.AccessibilityNodeInfo
+          import android.widget.Button
+          import android.widget.Toast
+          import java.io.File
+          import java.util.concurrent.CountDownLatch
+          import java.util.concurrent.TimeUnit
+          import java.util.concurrent.atomic.AtomicBoolean
+
+          class ClickService : AccessibilityService() {
+
+              companion object {
+                  @Volatile
+                  var instance: ClickService? = null
+              }
+
+              private val main = Handler(Looper.getMainLooper())
+              @Volatile private var running = false
+              private var worker: Thread? = null
+              private var overlay: View? = null
+
+              override fun onServiceConnected() {
+                  super.onServiceConnected()
+                  Logger.init(this)
+                  instance = this
+                  Logger.log("Servicio de accesibilidad conectado")
+              }
+
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+              override fun onInterrupt() {}
+
+              override fun onUnbind(intent: Intent?): Boolean {
+                  stopRun("Servicio de accesibilidad desconectado")
+                  instance = null
+                  return super.onUnbind(intent)
+              }
+
+              // ---------- control ----------
+
+              fun start(cfg: Config) {
+                  if (running) return
+                  running = true
+                  showOverlay()
+                  worker = Thread { runJob(cfg) }.also { it.start() }
+              }
+
+              fun stopRun(reason: String) {
+                  if (running) {
+                      running = false
+                      Logger.log(reason)
+                  }
+                  hideOverlay()
+                  worker?.interrupt()
+              }
+
+              private fun toast(msg: String) {
+                  main.post { Toast.makeText(applicationContext, msg, Toast.LENGTH_LONG).show() }
+              }
+
+              // ---------- bucle principal ----------
+
+              private fun runJob(c: Config) {
+                  try {
+                      val lista = c.prompts.filter { it.num >= c.startFrom }
+                      Logger.log("INICIO: ${lista.size} prompts, desde el n.º ${c.startFrom}. Esperando 10 s para que abras la app de imágenes.")
+                      if (!pause(10_000)) return
+                      for (p in lista) {
+                          if (!running) break
+                          Logger.log("--- Prompt ${p.num} ---")
+                          if (!processOne(c, p)) {
+                              stopRun("DETENIDO en el prompt ${p.num}. Revisa el registro.")
+                              toast("Detenido en el prompt ${p.num}")
+                              return
+                          }
+                      }
+                      if (running) {
+                          stopRun("TERMINADO: todos los prompts procesados")
+                          toast("Terminado")
+                      }
+                  } catch (e: Throwable) {
+                      Logger.log("ERROR: ${Log.getStackTraceString(e)}")
+                      stopRun("Detenido por error")
+                  }
+              }
+
+              private fun processOne(c: Config, p: Prompt): Boolean {
+                  // 1. tocar el campo de texto
+                  if (!tap(c.tx, c.ty)) { Logger.log("Falló el toque en el campo de texto"); return false }
+                  if (!pause(1200)) return false
+
+                  // 2. escribir el prompt
+                  var escrito = false
+                  for (i in 1..3) {
+                      if (insertText(p.text)) { escrito = true; break }
+                      if (!pause(600)) return false
+                  }
+                  if (!escrito) {
+                      Logger.log("No se pudo escribir el texto. ¿Es correcta la coordenada del campo?")
+                      return false
+                  }
+                  Logger.log("Texto escrito")
+                  if (!pause(800)) return false
+
+                  // 3. enviar
+                  if (!tap(c.sx, c.sy)) { Logger.log("Falló el toque en Enviar"); return false }
+                  Logger.log("Enviado. Esperando ${c.waitSec} s")
+                  if (!pause(c.waitSec * 1000L)) return false
+
+                  // 4. descargar y renombrar
+                  val antes = snapshot(c.folder)
+                  if (!tap(c.dx, c.dy)) { Logger.log("Falló el toque en Descargar"); return false }
+                  Logger.log("Descarga pulsada")
+                  val nuevo = waitNewFile(c.folder, antes)
+                  if (nuevo == null) {
+                      Logger.log("AVISO: no apareció archivo nuevo en ${c.folder}")
+                  } else {
+                      renameFile(nuevo, p.num)
+                  }
+                  return pause(1500)
+              }
+
+              // ---------- acciones ----------
+
+              private fun tap(x: Float, y: Float): Boolean {
+                  val path = Path().apply { moveTo(x, y) }
+                  val gesture = GestureDescription.Builder()
+                      .addStroke(GestureDescription.StrokeDescription(path, 0, 60))
+                      .build()
+                  val latch = CountDownLatch(1)
+                  val ok = AtomicBoolean(false)
+                  val accepted = dispatchGesture(gesture, object : GestureResultCallback() {
+                      override fun onCompleted(g: GestureDescription?) { ok.set(true); latch.countDown() }
+                      override fun onCancelled(g: GestureDescription?) { latch.countDown() }
+                  }, main)
+                  if (!accepted) return false
+                  latch.await(3, TimeUnit.SECONDS)
+                  return ok.get()
+              }
+
+              private fun insertText(text: String): Boolean {
+                  val root = rootInActiveWindow ?: return false
+                  val node = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
+                  val args = Bundle().apply {
+                      putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+                  }
+                  if (node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) return true
+                  val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+                  cm.setPrimaryClip(ClipData.newPlainText("prompt", text))
+                  return node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+              }
+
+              // ---------- archivos ----------
+
+              private fun snapshot(folder: String): Set<String> =
+                  File(folder).listFiles()?.map { it.absolutePath }?.toSet() ?: emptySet()
+
+              private fun isTemp(name: String): Boolean {
+                  val n = name.lowercase()
+                  return n.startsWith(".") || n.endsWith(".crdownload") || n.endsWith(".tmp") ||
+                      n.endsWith(".part") || n.endsWith(".partial") || n.endsWith(".download")
+              }
+
+              private fun waitNewFile(folder: String, before: Set<String>): File? {
+                  for (i in 1..20) {
+                      if (!pause(1000)) return null
+                      val cand = File(folder).listFiles()
+                          ?.filter { it.isFile && it.absolutePath !in before && !isTemp(it.name) }
+                          ?.maxByOrNull { it.lastModified() }
+                      if (cand != null) {
+                          val size = cand.length()
+                          if (!pause(1500)) return null
+                          if (cand.exists() && cand.length() == size) return cand
+                      }
+                  }
+                  return null
+              }
+
+              private fun renameFile(f: File, num: Int) {
+                  val ext = f.extension
+                  val base = num.toString()
+                  fun name(suffix: String) = if (ext.isEmpty()) "$base$suffix" else "$base$suffix.$ext"
+                  var target = File(f.parentFile, name(""))
+                  var i = 1
+                  while (target.exists()) {
+                      target = File(f.parentFile, name("_$i"))
+                      i++
+                  }
+                  if (f.renameTo(target)) {
+                      Logger.log("Guardado como ${target.name}")
+                  } else {
+                      Logger.log("AVISO: no se pudo renombrar ${f.name} a ${target.name}")
+                  }
+              }
+
+              private fun pause(ms: Long): Boolean {
+                  var left = ms
+                  try {
+                      while (left > 0 && running) {
+                          val s = minOf(200L, left)
+                          Thread.sleep(s)
+                          left -= s
+                      }
+                  } catch (e: InterruptedException) {
+                      return false
+                  }
+                  return running
+              }
+
+              // ---------- botón STOP flotante (mantiene también la pantalla encendida) ----------
+
+              private fun showOverlay() {
+                  main.post {
+                      if (overlay != null) return@post
+                      val b = Button(this).apply {
+                          text = "STOP"
+                          textSize = 12f
+                          setTextColor(Color.WHITE)
+                          setBackgroundColor(0xCCB00020.toInt())
+                          setOnClickListener { stopRun("Detenido por el usuario") }
+                      }
+                      val lp = WindowManager.LayoutParams(
+                          WindowManager.LayoutParams.WRAP_CONTENT,
+                          WindowManager.LayoutParams.WRAP_CONTENT,
+                          WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                          WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                              WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
+                          PixelFormat.TRANSLUCENT
+                      ).apply { gravity = Gravity.TOP or Gravity.END }
+                      try {
+                          (getSystemService(WINDOW_SERVICE) as WindowManager).addView(b, lp)
+                          overlay = b
+                      } catch (e: Exception) {
+                          Logger.log("No se pudo mostrar el botón STOP: ${e.message}")
+                      }
+                  }
+              }
+
+              private fun hideOverlay() {
+                  main.post {
+                      overlay?.let {
+                          try { (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(it) } catch (_: Exception) {}
+                      }
+                      overlay = null
+                  }
+              }
+          }
+          FIN_ARCHIVO_2
+          mkdir -p "$(dirname 'app/src/main/java/com/autoprompter/Logger.kt')"
+          cat > 'app/src/main/java/com/autoprompter/Logger.kt' <<'FIN_ARCHIVO_3'
+          package com.autoprompter
+
+          import android.content.Context
+          import java.io.File
+          import java.text.SimpleDateFormat
+          import java.util.Date
+          import java.util.Locale
+
+          object Logger {
+              private lateinit var file: File
+
+              fun init(ctx: Context) {
+                  if (!::file.isInitialized) {
+                      file = File(ctx.applicationContext.filesDir, "registro.txt")
+                  }
+              }
+
+              @Synchronized
+              fun log(msg: String) {
+                  if (!::file.isInitialized) return
+                  try {
+                      val t = SimpleDateFormat("dd/MM HH:mm:ss", Locale.US).format(Date())
+                      file.appendText("$t  $msg\n")
+                      if (file.length() > 300_000) {
+                          file.writeText(file.readText().takeLast(100_000))
+                      }
+                  } catch (_: Exception) {
+                  }
+              }
+
+              @Synchronized
+              fun read(): String {
+                  if (!::file.isInitialized) return ""
+                  return try { if (file.exists()) file.readText() else "" } catch (_: Exception) { "" }
+              }
+
+              @Synchronized
+              fun clear() {
+                  if (!::file.isInitialized) return
+                  try { file.writeText("") } catch (_: Exception) {}
+              }
+          }
+          FIN_ARCHIVO_3
+          mkdir -p "$(dirname 'app/src/main/java/com/autoprompter/MainActivity.kt')"
+          cat > 'app/src/main/java/com/autoprompter/MainActivity.kt' <<'FIN_ARCHIVO_4'
+          package com.autoprompter
+
+          import android.Manifest
+          import android.app.Activity
+          import android.app.AlertDialog
+          import android.content.ClipData
+          import android.content.ClipboardManager
+          import android.content.Intent
+          import android.content.SharedPreferences
+          import android.content.pm.PackageManager
+          import android.graphics.Color
+          import android.graphics.drawable.ColorDrawable
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.Environment
+          import android.provider.Settings
+          import android.text.InputType
+          import android.util.Log
+          import android.view.Gravity
+          import android.view.View
+          import android.widget.Button
+          import android.widget.EditText
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.TextView
+          import android.widget.Toast
+          import java.io.File
+
+          class MainActivity : Activity() {
+
+              private lateinit var prefs: SharedPreferences
+              private lateinit var etPrompts: EditText
+              private lateinit var etTx: EditText
+              private lateinit var etTy: EditText
+              private lateinit var etSx: EditText
+              private lateinit var etSy: EditText
+              private lateinit var etDx: EditText
+              private lateinit var etDy: EditText
+              private lateinit var etWait: EditText
+              private lateinit var etFrom: EditText
+              private lateinit var etFolder: EditText
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  Logger.init(this)
+                  val old = Thread.getDefaultUncaughtExceptionHandler()
+                  Thread.setDefaultUncaughtExceptionHandler { t, e ->
+                      Logger.log("CRASH: ${Log.getStackTraceString(e)}")
+                      old?.uncaughtException(t, e)
+                  }
+                  prefs = getSharedPreferences("cfg", MODE_PRIVATE)
+                  buildUi()
+                  load()
+              }
+
+              override fun onPause() {
+                  super.onPause()
+                  save()
+              }
+
+              // ---------- interfaz ----------
+
+              private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+              private fun label(t: String) = TextView(this).apply {
+                  text = t
+                  setTextColor(Color.WHITE)
+                  textSize = 14f
+                  setPadding(0, dp(14), 0, dp(4))
+              }
+
+              private fun edit(hint: String, numeric: Boolean = false, multi: Boolean = false) = EditText(this).apply {
+                  this.hint = hint
+                  setHintTextColor(0xFF777777.toInt())
+                  setTextColor(Color.WHITE)
+                  setBackgroundColor(0xFF1A1A1A.toInt())
+                  setPadding(dp(10), dp(8), dp(10), dp(8))
+                  if (numeric) {
+                      inputType = InputType.TYPE_CLASS_NUMBER
+                  } else if (multi) {
+                      inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                      minLines = 8
+                      gravity = Gravity.TOP
+                  } else {
+                      inputType = InputType.TYPE_CLASS_TEXT
+                      setSingleLine(true)
+                  }
+              }
+
+              private fun button(text: String, color: Int = 0xFF2A2A2A.toInt(), onClick: () -> Unit) =
+                  Button(this).apply {
+                      this.text = text
+                      setTextColor(Color.WHITE)
+                      setBackgroundColor(color)
+                      setOnClickListener { onClick() }
+                  }
+
+              private fun addCoord(root: LinearLayout, name: String): Pair<EditText, EditText> {
+                  root.addView(label(name))
+                  val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                  val x = edit("X", numeric = true)
+                  val y = edit("Y", numeric = true)
+                  row.addView(x, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(8) })
+                  row.addView(y, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                  root.addView(row)
+                  return Pair(x, y)
+              }
+
+              private fun addBtn(root: LinearLayout, b: Button) {
+                  root.addView(b, LinearLayout.LayoutParams(
+                      LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+                  ).apply { topMargin = dp(10) })
+              }
+
+              private fun buildUi() {
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setBackgroundColor(Color.BLACK)
+                      setPadding(dp(16), dp(16), dp(16), dp(32))
+                  }
+
+                  root.addView(label("Lista de prompts (formato: 1. texto)"))
+                  etPrompts = edit("1. Genérame la siguiente imagen...", multi = true)
+                  root.addView(etPrompts)
+
+                  val c1 = addCoord(root, "Campo de texto (coordenadas)"); etTx = c1.first; etTy = c1.second
+                  val c2 = addCoord(root, "Botón Enviar (coordenadas)"); etSx = c2.first; etSy = c2.second
+                  val c3 = addCoord(root, "Botón Descargar (coordenadas)"); etDx = c3.first; etDy = c3.second
+
+                  root.addView(label("Espera para generar (segundos)"))
+                  etWait = edit("60", numeric = true); root.addView(etWait)
+
+                  root.addView(label("Empezar desde el prompt n.º"))
+                  etFrom = edit("1", numeric = true); root.addView(etFrom)
+
+                  root.addView(label("Carpeta de descargas"))
+                  etFolder = edit("/storage/emulated/0/Download"); root.addView(etFolder)
+
+                  addBtn(root, button("1. Permiso de archivos") { askStorage() })
+                  addBtn(root, button("2. Activar accesibilidad") { askAccessibility() })
+                  addBtn(root, button("Ver registro") { showLog() })
+                  addBtn(root, button("INICIAR", 0xFF1B5E20.toInt()) { start() })
+
+                  setContentView(ScrollView(this).apply {
+                      setBackgroundColor(Color.BLACK)
+                      addView(root)
+                  })
+              }
+
+              // ---------- guardar / cargar ----------
+
+              private fun allFields() = listOf(
+                  "prompts" to etPrompts, "tx" to etTx, "ty" to etTy, "sx" to etSx, "sy" to etSy,
+                  "dx" to etDx, "dy" to etDy, "wait" to etWait, "from" to etFrom, "folder" to etFolder
+              )
+
+              private fun save() {
+                  val e = prefs.edit()
+                  allFields().forEach { (k, v) -> e.putString(k, v.text.toString()) }
+                  e.apply()
+              }
+
+              private fun load() {
+                  allFields().forEach { (k, v) -> prefs.getString(k, null)?.let { v.setText(it) } }
+                  if (etWait.text.isEmpty()) etWait.setText("60")
+                  if (etFrom.text.isEmpty()) etFrom.setText("1")
+                  if (etFolder.text.isEmpty()) {
+                      etFolder.setText(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath)
+                  }
+              }
+
+              // ---------- permisos ----------
+
+              private fun hasStorage(): Boolean =
+                  if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager()
+                  else checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+
+              private fun askStorage() {
+                  if (Build.VERSION.SDK_INT >= 30) {
+                      try {
+                          startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName")))
+                      } catch (e: Exception) {
+                          startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                      }
+                  } else {
+                      requestPermissions(arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE, Manifest.permission.READ_EXTERNAL_STORAGE), 1)
+                  }
+              }
+
+              private fun askAccessibility() {
+                  startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+              }
+
+              // ---------- registro ----------
+
+              private fun showLog() {
+                  val tv = TextView(this).apply {
+                      text = Logger.read().ifEmpty { "(vacío)" }
+                      setTextColor(Color.WHITE)
+                      textSize = 12f
+                      setPadding(dp(12), dp(12), dp(12), dp(12))
+                      setTextIsSelectable(true)
+                  }
+                  val sv = ScrollView(this).apply {
+                      setBackgroundColor(Color.BLACK)
+                      addView(tv)
+                  }
+                  val d = AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                      .setTitle("Registro")
+                      .setView(sv)
+                      .setPositiveButton("Cerrar", null)
+                      .setNeutralButton("Copiar") { _, _ ->
+                          val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+                          cm.setPrimaryClip(ClipData.newPlainText("registro", Logger.read()))
+                          toast("Registro copiado")
+                      }
+                      .setNegativeButton("Borrar") { _, _ -> Logger.clear() }
+                      .create()
+                  d.show()
+                  d.window?.setBackgroundDrawable(ColorDrawable(Color.BLACK))
+                  sv.post { sv.fullScroll(View.FOCUS_DOWN) }
+              }
+
+              // ---------- iniciar ----------
+
+              private fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_LONG).show()
+
+              private fun parse(text: String): List<Prompt> {
+                  val re = Regex("^\\s*(\\d+)\\s*\\.\\s*(.*)$")
+                  val out = mutableListOf<Prompt>()
+                  var num = -1
+                  val sb = StringBuilder()
+                  fun flush() {
+                      if (num >= 0 && sb.isNotBlank()) out.add(Prompt(num, sb.toString().trim()))
+                      sb.setLength(0)
+                  }
+                  for (line in text.lines()) {
+                      val m = re.find(line)
+                      if (m != null) {
+                          flush()
+                          num = m.groupValues[1].toIntOrNull() ?: -1
+                          sb.append(m.groupValues[2])
+                      } else if (line.isNotBlank() && num >= 0) {
+                          sb.append(' ').append(line.trim())
+                      }
+                  }
+                  flush()
+                  return out
+              }
+
+              private fun start() {
+                  save()
+                  val svc = ClickService.instance
+                  if (svc == null) {
+                      toast("Primero activa el servicio en Accesibilidad")
+                      askAccessibility()
+                      return
+                  }
+                  if (!hasStorage()) {
+                      toast("Falta el permiso de archivos")
+                      askStorage()
+                      return
+                  }
+                  val prompts = parse(etPrompts.text.toString())
+                  if (prompts.isEmpty()) {
+                      toast("La lista está vacía o mal formada (usa: 1. texto)")
+                      return
+                  }
+                  val n = listOf(etTx, etTy, etSx, etSy, etDx, etDy).map { it.text.toString().toFloatOrNull() }
+                  if (n.any { it == null }) {
+                      toast("Faltan coordenadas")
+                      return
+                  }
+                  val folder = etFolder.text.toString().trim()
+                  if (!File(folder).isDirectory) {
+                      toast("La carpeta de descargas no existe")
+                      return
+                  }
+                  val cfg = Config(
+                      prompts, n[0]!!, n[1]!!, n[2]!!, n[3]!!, n[4]!!, n[5]!!,
+                      etWait.text.toString().toIntOrNull() ?: 60,
+                      folder,
+                      etFrom.text.toString().toIntOrNull() ?: 1
+                  )
+                  svc.start(cfg)
+                  toast("Empieza en 10 s. Abre la app de imágenes.")
+                  moveTaskToBack(true)
+              }
+          }
+          FIN_ARCHIVO_4
+          mkdir -p "$(dirname 'app/src/main/java/com/autoprompter/Models.kt')"
+          cat > 'app/src/main/java/com/autoprompter/Models.kt' <<'FIN_ARCHIVO_5'
+          package com.autoprompter
+
+          data class Prompt(val num: Int, val text: String)
+
+          data class Config(
+              val prompts: List<Prompt>,
+              val tx: Float, val ty: Float,   // campo de texto
+              val sx: Float, val sy: Float,   // botón enviar
+              val dx: Float, val dy: Float,   // botón descargar
+              val waitSec: Int,
+              val folder: String,
+              val startFrom: Int
+          )
+          FIN_ARCHIVO_5
+          mkdir -p "$(dirname 'app/src/main/res/values/strings.xml')"
+          cat > 'app/src/main/res/values/strings.xml' <<'FIN_ARCHIVO_6'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">Auto Prompts</string>
+              <string name="service_desc">Toca la pantalla y escribe los prompts automáticamente.</string>
+          </resources>
+          FIN_ARCHIVO_6
+          mkdir -p "$(dirname 'app/src/main/res/values/themes.xml')"
+          cat > 'app/src/main/res/values/themes.xml' <<'FIN_ARCHIVO_7'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="AppTheme" parent="android:Theme.Material.NoActionBar">
+                  <item name="android:windowBackground">@android:color/black</item>
+                  <item name="android:statusBarColor">@android:color/black</item>
+                  <item name="android:navigationBarColor">@android:color/black</item>
+              </style>
+          </resources>
+          FIN_ARCHIVO_7
+          mkdir -p "$(dirname 'app/src/main/res/xml/accessibility_config.xml')"
+          cat > 'app/src/main/res/xml/accessibility_config.xml' <<'FIN_ARCHIVO_8'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeWindowStateChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:canPerformGestures="true"
+              android:canRetrieveWindowContent="true"
+              android:description="@string/service_desc"
+              android:notificationTimeout="100" />
+          FIN_ARCHIVO_8
+          mkdir -p "$(dirname 'build.gradle.kts')"
+          cat > 'build.gradle.kts' <<'FIN_ARCHIVO_9'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          FIN_ARCHIVO_9
+          mkdir -p "$(dirname 'gradle.properties')"
+          cat > 'gradle.properties' <<'FIN_ARCHIVO_10'
+          org.gradle.jvmargs=-Xmx2g
+          android.nonTransitiveRClass=true
+          FIN_ARCHIVO_10
+          mkdir -p "$(dirname 'settings.gradle.kts')"
+          cat > 'settings.gradle.kts' <<'FIN_ARCHIVO_11'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "AutoPrompts"
+          include(":app")
+          FIN_ARCHIVO_11
+      - name: Compilar
+        run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AutoPrompts-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
