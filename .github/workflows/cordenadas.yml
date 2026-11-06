@@ -25,27 +25,27 @@ jobs:
         run: |
           rm -rf app build.gradle.kts settings.gradle.kts gradle.properties
           
-      - name: Crear archivos del proyecto con Python
+      - name: Crear script de generación
         run: |
-          python3 -c "
+          cat << 'EOF' > generate.py
           import os
 
           files = {
-              'app/build.gradle.kts': '''plugins {
-      id(\"com.android.application\")
-      id(\"org.jetbrains.kotlin.android\")
+              'app/build.gradle.kts': """plugins {
+      id("com.android.application")
+      id("org.jetbrains.kotlin.android")
   }
 
   android {
-      namespace = \"com.coordscapture\"
+      namespace = "com.coordscapture"
       compileSdk = 34
 
       defaultConfig {
-          applicationId = \"com.coordscapture\"
+          applicationId = "com.coordscapture"
           minSdk = 24
           targetSdk = 34
           versionCode = 1
-          versionName = \"1.0\"
+          versionName = "1.0"
       }
 
       buildTypes {
@@ -55,15 +55,15 @@ jobs:
           sourceCompatibility = JavaVersion.VERSION_17
           targetCompatibility = JavaVersion.VERSION_17
       }
-      kotlinOptions { jvmTarget = \"17\" }
+      kotlinOptions { jvmTarget = "17" }
   }
 
   dependencies {
-      implementation(\"androidx.appcompat:appcompat:1.6.1\")
-      implementation(\"androidx.core:core-ktx:1.12.0\")
-      implementation(\"com.google.android.material:material:1.12.0\")
-  }''',
-              'settings.gradle.kts': '''pluginManagement {
+      implementation("androidx.appcompat:appcompat:1.6.1")
+      implementation("androidx.core:core-ktx:1.12.0")
+      implementation("com.google.android.material:material:1.12.0")
+  }""",
+              'settings.gradle.kts': """pluginManagement {
       repositories {
           google()
           mavenCentral()
@@ -77,30 +77,30 @@ jobs:
           mavenCentral()
       }
   }
-  rootProject.name = \"CoordsCapture\"
-  include(\":app\")''',
-              'app/src/main/AndroidManifest.xml': '''<?xml version=\"1.0\" encoding=\"utf-8\"?>
-  <manifest xmlns:android=\"http://schemas.android.com/apk/res/android\">
-      <uses-permission android:name=\"android.permission.SYSTEM_ALERT_WINDOW\" />
-      <uses-permission android:name=\"android.permission.VIBRATE\" />
-      <uses-permission android:name=\"android.permission.FOREGROUND_SERVICE\" />
+  rootProject.name = "CoordsCapture"
+  include(":app")""",
+              'app/src/main/AndroidManifest.xml': """<?xml version="1.0" encoding="utf-8"?>
+  <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+      <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+      <uses-permission android:name="android.permission.VIBRATE" />
+      <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
       <application
-          android:allowBackup=\"true\"
-          android:label=\"Coords AMOLED\"
-          android:theme=\"@android:style/Theme.Black.NoTitleBar\">
+          android:allowBackup="true"
+          android:label="Coords AMOLED"
+          android:theme="@android:style/Theme.Black.NoTitleBar">
           <activity
-              android:name=\".MainActivity\"
-              android:exported=\"true\"
-              android:background=\"#000000\">
+              android:name=".MainActivity"
+              android:exported="true"
+              android:background="#000000">
               <intent-filter>
-                  <action android:name=\"android.intent.action.MAIN\" />
-                  <category android:name=\"android.intent.category.LAUNCHER\" />
+                  <action android:name="android.intent.action.MAIN" />
+                  <category android:name="android.intent.category.LAUNCHER" />
               </intent-filter>
           </activity>
-          <service android:name=\".CaptureService\" android:exported=\"false\" />
+          <service android:name=".CaptureService" android:exported="false" />
       </application>
-  </manifest>''',
-              'app/src/main/java/com/coordscapture/MainActivity.kt': '''package com.coordscapture
+  </manifest>""",
+              'app/src/main/java/com/coordscapture/MainActivity.kt': """package com.coordscapture
 
   import android.content.Intent
   import android.graphics.Color
@@ -128,7 +128,7 @@ jobs:
           }
 
           val title = TextView(this).apply {
-              text = \"COORDS\\nAMOLED\"
+              text = "COORDS\\nAMOLED"
               setTextColor(Color.WHITE)
               textSize = 28f
               gravity = Gravity.CENTER
@@ -137,8 +137,8 @@ jobs:
           }
 
           val subtitle = TextView(this).apply {
-              text = \"Fondo negro puro\\nPrecisión al pixel\\nFormato X=540 Y=543\"
-              setTextColor(Color.parseColor(\"#AAAAAA\"))
+              text = "Fondo negro puro\\nPrecisión al pixel\\nFormato X=540 Y=543"
+              setTextColor(Color.parseColor("#AAAAAA"))
               textSize = 14f
               gravity = Gravity.CENTER
               setPadding(0,0,0,80)
@@ -146,39 +146,39 @@ jobs:
 
           val last = getLastCoord()
           val tvLast = TextView(this).apply {
-              text = if (last.isNotEmpty()) \"Último: \$last\" else \"Sin capturas aún\"
-              setTextColor(Color.parseColor(\"#666666\"))
+              text = if (last.isNotEmpty()) "Último: $last" else "Sin capturas aún"
+              setTextColor(Color.parseColor("#666666"))
               textSize = 12f
               gravity = Gravity.CENTER
               setPadding(0,0,0,40)
           }
 
           val btn = MaterialButton(this).apply {
-              text = \"ESCANEAR\"
+              text = "ESCANEAR"
               textSize = 18f
               setTextColor(Color.WHITE)
-              setBackgroundColor(Color.parseColor(\"#222222\"))
+              setBackgroundColor(Color.parseColor("#222222"))
               cornerRadius = 24
               setPadding(80, 40, 80, 40)
               strokeWidth = 2
-              strokeColor = android.content.res.ColorStateList.valueOf(Color.parseColor(\"#333333\"))
+              strokeColor = android.content.res.ColorStateList.valueOf(Color.parseColor("#333333"))
               setOnClickListener {
                   if (!Settings.canDrawOverlays(this@MainActivity)) {
-                      Toast.makeText(this@MainActivity, \"Activa 'Mostrar sobre otras apps'\", Toast.LENGTH_LONG).show()
-                      val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse(\"package:\$packageName\"))
+                      Toast.makeText(this@MainActivity, "Activa 'Mostrar sobre otras apps'", Toast.LENGTH_LONG).show()
+                      val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
                       startActivity(intent)
                       return@setOnClickListener
                   }
-                  val i = Intent(this@MainActivity, CaptureService::class.java).apply { action = \"START\" }
+                  val i = Intent(this@MainActivity, CaptureService::class.java).apply { action = "START" }
                   if (Build.VERSION.SDK_INT >= 26) startForegroundService(i) else startService(i)
-                  Toast.makeText(this@MainActivity, \"Botón flotante activo - minimizando\", Toast.LENGTH_SHORT).show()
+                  Toast.makeText(this@MainActivity, "Botón flotante activo - minimizando", Toast.LENGTH_SHORT).show()
                   moveTaskToBack(true)
               }
           }
 
           val hint = TextView(this).apply {
-              text = \"\\n\\nInstrucciones:\\n1. ESCANEAR\\n2. Mueve el botón flotante donde no estorbe\\n3. Toca el punto exacto → copia X=... Y=...\\n4. Toca el flotante para pausar/reanudar\"
-              setTextColor(Color.parseColor(\"#555555\"))
+              text = "\\n\\nInstrucciones:\\n1. ESCANEAR\\n2. Mueve el botón flotante donde no estorbe\\n3. Toca el punto exacto → copia X=... Y=...\\n4. Toca el flotante para pausar/reanudar"
+              setTextColor(Color.parseColor("#555555"))
               textSize = 11f
               gravity = Gravity.CENTER
           }
@@ -193,7 +193,7 @@ jobs:
       }
 
       private fun getLastCoord(): String {
-          return getSharedPreferences(\"coords\", MODE_PRIVATE).getString(\"last\", \"\") ?: \"\"
+          return getSharedPreferences("coords", MODE_PRIVATE).getString("last", "") ?: ""
       }
 
       override fun onResume() {
@@ -201,8 +201,8 @@ jobs:
           setContentView(findViewById<LinearLayout>(android.R.id.content).getChildAt(0))
           recreate()
       }
-  }''',
-              'app/src/main/java/com/coordscapture/CaptureService.kt': '''package com.coordscapture
+  }""",
+              'app/src/main/java/com/coordscapture/CaptureService.kt': """package com.coordscapture
 
   import android.app.Notification
   import android.app.NotificationChannel
@@ -250,7 +250,7 @@ jobs:
       }
 
       override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-          if (intent?.action == \"STOP\") {
+          if (intent?.action == "STOP") {
               stopSelf()
               return START_NOT_STICKY
           }
@@ -259,15 +259,15 @@ jobs:
       }
 
       private fun startForegroundNotification() {
-          val channelId = \"coords_channel\"
+          val channelId = "coords_channel"
           if (Build.VERSION.SDK_INT >= 26) {
-              val channel = NotificationChannel(channelId, \"Coords\", NotificationManager.IMPORTANCE_LOW)
+              val channel = NotificationChannel(channelId, "Coords", NotificationManager.IMPORTANCE_LOW)
               channel.setShowBadge(false)
               (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(channel)
           }
           val notif: Notification = NotificationCompat.Builder(this, channelId)
-              .setContentTitle(\"Coords AMOLED activo\")
-              .setContentText(\"Toca la pantalla para capturar X=... Y=...\")
+              .setContentTitle("Coords AMOLED activo")
+              .setContentText("Toca la pantalla para capturar X=... Y=...")
               .setSmallIcon(android.R.drawable.ic_menu_mylocation)
               .setOngoing(true)
               .build()
@@ -285,13 +285,13 @@ jobs:
               PixelFormat.TRANSLUCENT
           )
           val captureRoot = FrameLayout(this).apply {
-              setBackgroundColor(Color.parseColor(\"#01000000\"))
+              setBackgroundColor(Color.parseColor("#01000000"))
               setOnTouchListener { _, ev ->
                   if (!isScanning) return@setOnTouchListener false
                   if (ev.action == MotionEvent.ACTION_DOWN) {
                       val x = ev.rawX.toInt()
                       val y = ev.rawY.toInt()
-                      val formatted = \"X=\$x Y=\$y\"
+                      val formatted = "X=$x Y=$y"
                       saveAndCopy(formatted)
                       showCoord(formatted, x, y)
                       vibrate()
@@ -314,7 +314,7 @@ jobs:
               y = 120
           }
           val tv = TextView(this).apply {
-              text = \"TOCA UN PUNTO\"
+              text = "TOCA UN PUNTO"
               setTextColor(Color.WHITE)
               textSize = 13f
               setBackgroundColor(Color.BLACK)
@@ -335,10 +335,10 @@ jobs:
               y = 400
           }
           val btn = TextView(this).apply {
-              text = \"ESCANEANDO\"
+              text = "ESCANEANDO"
               setTextColor(Color.WHITE)
               textSize = 12f
-              setBackgroundColor(Color.parseColor(\"#222222\"))
+              setBackgroundColor(Color.parseColor("#222222"))
               setPadding(32, 20, 32, 20)
           }
 
@@ -383,8 +383,8 @@ jobs:
           isScanning = !isScanning
           val btn = floatingBtn as? TextView ?: return
           if (isScanning) {
-              btn.text = \"ESCANEANDO\"
-              btn.setBackgroundColor(Color.parseColor(\"#222222\"))
+              btn.text = "ESCANEANDO"
+              btn.setBackgroundColor(Color.parseColor("#222222"))
               if (captureOverlay == null) {
                   val captureParams = WindowManager.LayoutParams(
                       WindowManager.LayoutParams.MATCH_PARENT,
@@ -394,13 +394,13 @@ jobs:
                       PixelFormat.TRANSLUCENT
                   )
                   val captureRoot = FrameLayout(this).apply {
-                      setBackgroundColor(Color.parseColor(\"#01000000\"))
+                      setBackgroundColor(Color.parseColor("#01000000"))
                       setOnTouchListener { _, ev ->
                           if (!isScanning) return@setOnTouchListener false
                           if (ev.action == MotionEvent.ACTION_DOWN) {
                               val x = ev.rawX.toInt()
                               val y = ev.rawY.toInt()
-                              val formatted = \"X=\$x Y=\$y\"
+                              val formatted = "X=$x Y=$y"
                               saveAndCopy(formatted)
                               showCoord(formatted, x, y)
                               vibrate()
@@ -413,27 +413,27 @@ jobs:
                   captureOverlay = captureRoot
                   coordView?.visibility = View.VISIBLE
               }
-              Toast.makeText(this, \"ESCANEANDO activado\", Toast.LENGTH_SHORT).show()
+              Toast.makeText(this, "ESCANEANDO activado", Toast.LENGTH_SHORT).show()
           } else {
-              btn.text = \"DETENIDO\"
-              btn.setBackgroundColor(Color.parseColor(\"#880000\"))
+              btn.text = "DETENIDO"
+              btn.setBackgroundColor(Color.parseColor("#880000"))
               captureOverlay?.let { try { wm?.removeView(it) } catch (_: Exception) {} }
               captureOverlay = null
               coordView?.visibility = View.GONE
-              Toast.makeText(this, \"DETENIDO - toca de nuevo para escanear\", Toast.LENGTH_SHORT).show()
+              Toast.makeText(this, "DETENIDO - toca de nuevo para escanear", Toast.LENGTH_SHORT).show()
           }
       }
 
       private fun showCoord(formatted: String, x: Int, y: Int) {
           coordView?.text = formatted
           coordView?.visibility = View.VISIBLE
-          Toast.makeText(this, \"\$formatted - COPIADO\", Toast.LENGTH_SHORT).show()
+          Toast.makeText(this, "$formatted - COPIADO", Toast.LENGTH_SHORT).show()
       }
 
       private fun saveAndCopy(formatted: String) {
-          getSharedPreferences(\"coords\", MODE_PRIVATE).edit().putString(\"last\", formatted).apply()
+          getSharedPreferences("coords", MODE_PRIVATE).edit().putString("last", formatted).apply()
           val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-          cm.setPrimaryClip(ClipData.newPlainText(\"coords\", formatted))
+          cm.setPrimaryClip(ClipData.newPlainText("coords", formatted))
       }
 
       private fun vibrate() {
@@ -442,7 +442,7 @@ jobs:
               if (Build.VERSION.SDK_INT >= 26) {
                 v.vibrate(VibrationEffect.createOneShot(40, VibrationEffect.DEFAULT_AMPLITUDE))
               } else {
-                @Suppress(\"DEPRECATION\")
+                @Suppress("DEPRECATION")
                 v.vibrate(40)
               }
           } catch (_: Exception) {}
@@ -461,7 +461,7 @@ jobs:
           removeAll()
           super.onDestroy()
       }
-  }'''
+  }"""
           }
 
           for path, content in files.items():
@@ -469,8 +469,9 @@ jobs:
               with open(path, 'w', encoding='utf-8') as f:
                   f.write(content)
           print('Archivos creados correctamente')
-          "
-
+          EOF
+          python3 generate.py
+          
       - name: Compilar
         run: |
           gradle clean assembleDebug --no-daemon --stacktrace
